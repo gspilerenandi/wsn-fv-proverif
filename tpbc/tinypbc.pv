@@ -1,0 +1,121 @@
+set traceDisplay = long.
+set ignoreTypes = false.
+
+type mkey.
+type g.
+type id.
+
+free S:mkey [private].
+free CA:channel.
+free CB:channel.
+free CX:channel.
+free CPVTA:channel [private].
+free CPVTB:channel [private].
+const EC: g [data].
+table alreadyPaired(id, id).
+table idsA(id).
+table idsB(id).
+
+fun phi(g, id): g [private].
+
+fun calcPrivateKey(g, mkey): g.
+
+fun calcPairKey(g,g): g.
+
+fun encrypt(g, bitstring): bitstring.
+
+reduc forall AIDI: bitstring, K: g ; decrypt ( encrypt(K, AIDI) , K ) = AIDI.
+
+equation forall	PA: g, PB: g, SKEY: mkey; calcPairKey( calcPrivateKey(PA, SKEY), PB )
+																					=  calcPairKey( calcPrivateKey(PB, SKEY), PA ).
+
+event eADecryptsMessage(bitstring).
+event eBDecryptsMessage(bitstring).
+
+event eEncryptMessageA(g, bitstring).
+event eEncryptMessageB(g, bitstring).
+
+event eNodesAlreadyPairedA(id, id).
+event eNodesAlreadyPairedB(id, id).
+
+query qM: bitstring, qEC: g, qSHKEYB: g, qIDA: id, qIDB: id;
+	event(eADecryptsMessage(qM)) ==> inj-event(eEncryptMessageB(qSHKEYB, qM))
+	&& qSHKEYB = calcPairKey( calcPrivateKey(phi(qEC, qIDB), S), phi(qEC, qIDA))
+	&& qIDB = new IDB && qIDA = new IDA && qM = new MSGB.
+
+query qM: bitstring, qEC: g, qSHKEYA: g, qIDA: id, qIDB: id;
+	event(eBDecryptsMessage(qM)) ==> inj-event(eEncryptMessageA(qSHKEYA, qM))
+	&& qSHKEYA = calcPairKey( calcPrivateKey(phi(qEC, qIDA), S), phi(qEC, qIDB))
+	&& qIDB = new IDB && qIDA = new IDA && qM = new MSGA.
+
+query secret KEYA.
+query secret KEYB.
+query secret MSGRB.
+query secret MSGRA.
+query attacker(S).
+query attacker(new IDA).
+query attacker(new IDB).
+query attacker(EC).
+query attacker(new MSGA).
+query attacker(new MSGB).
+
+let nodeA() =
+	new IDA: id;
+	out(CX, IDA);
+	insert idsA(IDA);
+	let PA = phi(EC, IDA) in
+	new MSGA: bitstring;
+	!(
+		get idsB(IDRAB: id) in
+		(
+			get alreadyPaired(=IDA, =IDRAB) in
+			(
+				event eNodesAlreadyPairedA(IDA, IDRAB)
+			)
+			else
+			(
+				let PRA = phi(EC, IDRAB) in
+					let KEYA = calcPairKey( calcPrivateKey( PA, S ), PRA) in
+					event eEncryptMessageA(KEYA, MSGA);
+					out(CA, (encrypt(KEYA, MSGA), IDA, IDRAB));
+					in(CB, (EMGSRA: bitstring, IDRA2: id, IDRA3: id));
+					if ((IDRA2 = IDRAB) && (IDA = IDRA3)) then
+					let MSGRA =  decrypt (EMGSRA , KEYA) in
+						if (MSGRA <> MSGA) then
+						insert alreadyPaired(IDA, IDRAB);
+						event eADecryptsMessage(MSGRA)
+			)
+		)
+	).
+
+let nodeB() =
+	new IDB: id;
+	out(CX, IDB);
+	insert idsB(IDB);
+	let PB = phi(EC, IDB) in
+	new MSGB: bitstring;
+	!(
+		get idsA(IDRBA: id) in
+		(
+			get alreadyPaired(=IDB, =IDRBA) in
+			(
+				event eNodesAlreadyPairedB(IDB, IDRBA)
+			)
+			else
+			(
+				let PRB = phi(EC, IDRBA) in
+					let KEYB = calcPairKey( calcPrivateKey( PB, S ), PRB) in
+						event eEncryptMessageB(KEYB, MSGB);
+						out(CB, (encrypt(KEYB, MSGB), IDB, IDRBA));
+						in(CA, (EMGSRB: bitstring, IDRB2: id, IDRB3: id));
+						if ((IDRB2 = IDRBA) && (IDRB3 = IDB)) then
+						let MSGRB =  decrypt ( EMGSRB , KEYB) in
+							if (MSGRB <> MSGB) then
+							insert alreadyPaired(IDB, IDRBA);
+							event eBDecryptsMessage(MSGRB)
+			)
+		)
+	).
+
+	process
+		( !nodeA() | !nodeB() )

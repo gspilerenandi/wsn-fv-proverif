@@ -1,0 +1,168 @@
+set traceDisplay = long.
+set abbreviateDerivation = false.
+
+type skey.
+type g.
+type number.
+type secretkey.
+type pkey.
+type id.
+
+free C1: channel.
+free C2: channel.
+free CX: channel.
+free TRIGGER: channel [private].
+const GP: g [private].
+
+table alreadyPaired(id, id).
+
+table publicKeysA(id, pkey).
+table publicKeysB(id, pkey).
+
+fun calcSecretKey(number, g): secretkey [private].
+
+fun calcPublicKey(skey, g): pkey [private].
+
+fun addsSkeyPlusNumber(skey, number): g.
+
+fun encryption(g,pkey): g.
+
+reduc forall KA': skey, X': number, GENPOINT: g, KB': skey, PUA': pkey; decryption( encryption( addsSkeyPlusNumber(KA',X'),
+	calcPublicKey(KB', GENPOINT)), KB', calcPublicKey(KA', GENPOINT) ) = calcSecretKey(X', GENPOINT).
+
+fun calcSharedKey(secretkey, secretkey): secretkey.
+
+event eNodeACreatesTheSecretKey(secretkey).
+event eNodeBCreatesTheSecretKey(secretkey).
+
+event eNodeBDecryptsAsSecretKey(secretkey).
+event eNodeADecryptsBsSecretKey(secretkey).
+
+event eNodeBComputesSharedKey(secretkey).
+event eNodeAComputesSharedKey(secretkey).
+
+event eSendKAXPUB(g).
+event eSendKBYPUA(g).
+
+event eReceiveEncryptedMsgB(g).
+event eReceiveEncryptedMsgA(g).
+
+event eDecryptedUsingKB(secretkey,skey).
+event eDecryptedUsingKA(secretkey,skey).
+
+event eNodesAlreadyPairedA(id, id).
+event eNodesAlreadyPairedB(id, id).
+
+event ePublicKeyUnkownB(pkey).
+event ePublicKeyUnkownA(pkey).
+
+query qXGGY: secretkey, qYGGX: secretkey, qKBYPUA: g, qKAXPUB: g,
+qKB: skey, qKA: skey, qY: number, qX: number, qGX: secretkey, qGY: secretkey;
+	event(eNodeAComputesSharedKey(qXGGY)) ==>
+	(
+		(inj-event(eNodeBComputesSharedKey(qYGGX)) ==> inj-event (eSendKAXPUB(qKAXPUB)))
+	)
+	&& qXGGY = calcSharedKey(qGX, qGY) && qYGGX = calcSharedKey(qGX, qGY)
+	&& qGX = calcSecretKey(qX,GP) && qGY = calcSecretKey(qY,GP)
+	&& qKBYPUA = encryption(addsSkeyPlusNumber(qKB, qY), calcPublicKey(qKA, GP))
+	&& qKAXPUB = encryption(addsSkeyPlusNumber(qKA, qX), calcPublicKey(qKB, GP)).
+
+query qXGGY: secretkey, qYGGX: secretkey, qKBYPUA: g, qKAXPUB: g,
+qKB: skey, qKA: skey, qY: number, qX: number, qGX: secretkey, qGY: secretkey ;
+	event(eNodeBComputesSharedKey(qXGGY)) ==>
+	(
+		inj-event (eSendKAXPUB(qKAXPUB))
+	)
+	&& qXGGY = calcSharedKey(qGX, qGY) && qGX = calcSecretKey(qX,GP) && qGY = calcSecretKey(qY,GP)
+	&& qKAXPUB = encryption(addsSkeyPlusNumber(qKA, qX), calcPublicKey(qKB, GP)).
+
+
+query attacker(new KA).
+query attacker(new KB).
+query attacker(GP).
+query attacker(new X).
+query attacker(new Y).
+query attacker(calcPublicKey(new KB, GP)).
+query attacker(calcPublicKey(new KA, GP)).
+
+query attacker(calcSharedKey( calcSecretKey(new X, GP), calcSecretKey(new Y, GP))).
+query attacker(calcSharedKey( calcSecretKey(new Y, GP), calcSecretKey(new X, GP))).
+
+query secret KAXPUB.
+query secret KBYPUA.
+
+query secret XG.
+query secret GY.
+
+query secret XGGY.
+query secret YGGX.
+
+query secret GX.
+query secret YG.
+
+let nodeA() =
+	new KA: skey;
+	new IDA: id;
+	let PUA = calcPublicKey(KA, GP) in
+	insert publicKeysA(IDA, PUA);
+	out(CX, PUA);
+	!(
+		get publicKeysB(IDBR1: id, PURB: pkey) in
+		(
+			get alreadyPaired(=IDA, =IDBR1) in
+			(
+				event eNodesAlreadyPairedA(IDA, IDBR1)
+			)
+			else
+			(
+				new X: number;
+				let XG = calcSecretKey(X, GP) in
+					event eNodeACreatesTheSecretKey(XG);
+						let KAXPUB = encryption( addsSkeyPlusNumber(KA, X), PURB) in
+							event eSendKAXPUB(KAXPUB);
+							out(C1, (KAXPUB, IDA, IDBR1));
+							in(C2, (K2:g, IDBR2: id, IDAR: id));
+							if ((IDAR = IDA) && (IDBR2 = IDBR1)) then
+							let GY = decryption(K2, KA, PURB) in(
+								event eDecryptedUsingKA(GY,KA);
+								let XGGY = calcSharedKey(XG, GY) in
+									insert alreadyPaired(IDA, IDBR1);
+									event eNodeAComputesSharedKey(XGGY))
+				)
+			)
+		).
+
+let nodeB() =
+	new KB: skey;
+	new IDB: id;
+	let PUB = calcPublicKey(KB, GP) in
+	insert publicKeysB(IDB, PUB);
+	out(CX, PUB);
+	!(
+		in(C1, (K1: g, IDAR1: id, IDBR: id));
+		if (IDBR = IDB) then
+		get alreadyPaired(=IDB, =IDAR1) in
+		(
+			event eNodesAlreadyPairedB(IDB, IDAR1)
+		)
+		else
+		(
+			new Y: number;
+			let YG = calcSecretKey(Y, GP) in
+			event eNodeBCreatesTheSecretKey(YG);
+			get publicKeysA(=IDAR1, PURA: pkey) in
+			(
+				let GX = decryption(K1,KB,PURA) in
+					event eDecryptedUsingKB(GX,KB);
+					let YGGX = calcSharedKey(GX,YG) in
+						insert alreadyPaired(IDB, IDAR1);
+						event eNodeBComputesSharedKey(YGGX);
+						let KBYPUA = encryption(addsSkeyPlusNumber(KB,Y),PURA) in
+							event eSendKBYPUA(KBYPUA);
+							out(C2, (KBYPUA, IDB, IDAR1))
+			)
+		)
+	).
+
+process
+			(!nodeB() | !nodeA())

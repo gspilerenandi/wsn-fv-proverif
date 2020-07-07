@@ -1,0 +1,142 @@
+set traceDisplay = long.
+set ignoreTypes = true.
+set unifyDerivation = true.
+set reconstructDerivation = true.
+
+type skey.
+type nonce.
+type id.
+type pkey. 
+type shkey.
+type ackmsg.
+
+free BSSKEY: skey [private].
+free CN: channel.
+free CBS: channel.
+free CPUBLIC: channel.
+free ACK: ackmsg [private].
+table pairsIdsNonces(id, nonce).
+table idSkey(id, skey).
+free BASEID: id.
+
+fun pk(skey): pkey [private].
+
+fun aenc(shkey, pkey): bitstring.
+reduc forall SHAREDKEY: shkey, NODEPKEY: skey; adec(aenc(SHAREDKEY, pk(NODEPKEY)), NODEPKEY) = SHAREDKEY.
+
+fun shenc(ackmsg, shkey): bitstring.
+reduc forall SHAREDKEY: shkey, ACKMESSAGE: ackmsg; shdec(shenc(ACKMESSAGE, SHAREDKEY), SHAREDKEY) = ACKMESSAGE.
+
+fun calcSharedKey(nonce, id): shkey [private].
+
+fun hash(shkey): bitstring [private].
+
+fun sign(bitstring, skey): bitstring.
+reduc forall HASHVALUE: bitstring, BASESKEY: skey; checkSign(sign(HASHVALUE, BASESKEY), pk(BASESKEY)) = HASHVALUE.
+
+fun sessionCreation(nonce): bitstring [private].
+reduc forall NONCEREQUEST: nonce; checkSessionNumber(sessionCreation(NONCEREQUEST)) = NONCEREQUEST.
+
+event eSendIDandNonce(id,nonce).
+event eDecryptSharedKey(shkey,skey).
+event eAfterUnsigningHash(bitstring, nonce).
+event eNodeSendsACK(bitstring, id, nonce).
+event eHashOfTheReceivedKey(bitstring).
+
+event eBaseStationReceivesACK(ackmsg, id, nonce).
+event eEncryptionOfTheSharedKey(bitstring).
+event eCreateSharedKey(nonce,id).
+event eNonceAlreadyUsed(nonce).
+event eIdNotFound(id).
+event eAfterTheSharedKeyCreation(shkey).
+event eCreateTheSignedMessage(bitstring).
+event eNonceStoredInTheBaseStation(id, nonce).
+event eHashOfTheCreatedKey(bitstring).
+
+event eNonceNotCompatible(nonce).
+
+query qKBSS1: shkey, qKEYTAG: nonce, qNODEID: id, qREQUESTNONCENODE: nonce, qREQUESTNONCEBS: nonce, qACKENC: bitstring;
+	event(eBaseStationReceivesACK(ACK, qNODEID, qREQUESTNONCEBS))	==>
+	(
+		inj-event (eNodeSendsACK(qACKENC, qNODEID, qREQUESTNONCENODE)) ==>
+		(
+			inj-event (eNonceStoredInTheBaseStation(qNODEID, qREQUESTNONCEBS)) ==> inj-event (eSendIDandNonce(qNODEID,qREQUESTNONCENODE))
+		)
+	)
+	&& qACKENC = shenc(ACK, qKBSS1) && qKBSS1 = calcSharedKey(qKEYTAG, qNODEID)
+	&& qREQUESTNONCEBS = qREQUESTNONCENODE.
+
+	query secret KBSNODE.
+	query secret KNODEBS.
+
+	query attacker(BSSKEY).
+	query attacker(new NODESKEY).
+	query attacker(new NODEID).
+	query attacker(new REQUESTNONCE).
+
+	query mess(CN, new NODEID).
+	query mess(CN, new REQUESTNONCE).
+
+	query attacker(calcSharedKey(new keyTag, new NODEID)).
+
+let node() =
+	new NODEID: id;
+	out(CPUBLIC, NODEID);
+	new NODESKEY: skey;
+	insert idSkey(NODEID, NODESKEY);
+	!(
+		new REQUESTNONCE:nonce;
+		event eSendIDandNonce(NODEID,REQUESTNONCE);
+		out(CN, (NODEID, BASEID, REQUESTNONCE));
+		in(CBS, (ENCRYPTEDSHAREDKEY: bitstring, SIGNEDMESSAGE: bitstring, SESSIONNUMBERNODE: bitstring));
+		let REQUESTNONCESEEION = checkSessionNumber(SESSIONNUMBERNODE) in
+		if ((REQUESTNONCESEEION = REQUESTNONCE)) then
+		let KNODEBS = adec(ENCRYPTEDSHAREDKEY, NODESKEY) in
+			event eDecryptSharedKey(KNODEBS, NODESKEY);
+			let HASHNODE = hash(KNODEBS) in
+				event eHashOfTheReceivedKey(HASHNODE);
+				let UNSIGNEDHASHNODE = checkSign(SIGNEDMESSAGE, pk(BSSKEY)) in
+					if (HASHNODE = UNSIGNEDHASHNODE) then
+						event eAfterUnsigningHash(UNSIGNEDHASHNODE, REQUESTNONCE);
+						let ACKENCRYPTEDNODE = shenc(ACK, KNODEBS) in
+						event eNodeSendsACK(ACKENCRYPTEDNODE, NODEID, REQUESTNONCE);
+						out(CN, (ACKENCRYPTEDNODE, SESSIONNUMBERNODE))
+		).
+
+let baseStation() =
+	in(CN, (NIDRB:id, BIDRB: id, RREQUESTNONCE: nonce));
+	if (BIDRB = BASEID) then
+		get idSkey(=NIDRB, NODESKEY': skey) in
+		(
+			get pairsIdsNonces(IDCHECK: id, =RREQUESTNONCE) in
+			(
+				event eNonceAlreadyUsed(RREQUESTNONCE)
+			)
+			else
+			(
+				insert pairsIdsNonces(NIDRB, RREQUESTNONCE);
+				event eNonceStoredInTheBaseStation(NIDRB, RREQUESTNONCE);
+				new keyTag: nonce;
+				event eCreateSharedKey(keyTag,NIDRB);
+				let KBSNODE = calcSharedKey(keyTag, NIDRB) in
+					event eAfterTheSharedKeyCreation(KBSNODE);
+					let NODEPKEY = pk(NODESKEY') in
+					let MSGKEY = aenc(KBSNODE,NODEPKEY) in
+						event eEncryptionOfTheSharedKey(MSGKEY);
+						let MSGHASH = hash(KBSNODE) in
+							event eHashOfTheCreatedKey(MSGHASH);
+							let MSGSIGNED = sign(MSGHASH, BSSKEY) in
+								event eCreateTheSignedMessage(MSGSIGNED);
+								let SESSIONNUMBERBASE = sessionCreation(RREQUESTNONCE) in
+								out(CBS, (MSGKEY, MSGSIGNED, SESSIONNUMBERBASE));
+								in(CN, (ACKENCRYPTEDBASE: bitstring, SESSIONNUMBERBASER: bitstring));
+								if ((SESSIONNUMBERBASER = SESSIONNUMBERBASE))then
+								let ACKDECRYPTEDBASE = shdec(ACKENCRYPTEDBASE, KBSNODE) in
+									event eBaseStationReceivesACK(ACKDECRYPTEDBASE, NIDRB, RREQUESTNONCE)
+				)
+		)
+		else
+			event eIdNotFound(NIDRB).
+
+	process
+		( !node() | !baseStation() )
